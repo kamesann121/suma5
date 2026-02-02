@@ -17,14 +17,14 @@ const PORT = process.env.PORT || 3000;
 // 静的ファイル提供
 app.use(express.static(path.join(__dirname, 'public')));
 
-// プレイヤーデータ管理
-const players = {};
+// ユーザーデータ管理
+const users = {};
 
 io.on('connection', (socket) => {
-    console.log(`プレイヤー接続: ${socket.id}`);
+    console.log(`ユーザー接続: ${socket.id}`);
 
-    // 新規プレイヤー参加
-    players[socket.id] = {
+    // 新規ユーザー参加
+    users[socket.id] = {
         id: socket.id,
         x: 0,
         y: 0,
@@ -32,38 +32,38 @@ io.on('connection', (socket) => {
         rotationY: 0,
         mode: 1,
         motion: 'm_idle1',
-        health: 100,
-        isAttacking: false
+        status: 100,
+        isActive: false
     };
 
-    // 既存プレイヤー情報を送信
-    socket.emit('currentPlayers', players);
+    // 既存ユーザー情報を送信
+    socket.emit('currentUsers', users);
 
-    // 他のプレイヤーに新規プレイヤーを通知
-    socket.broadcast.emit('newPlayer', players[socket.id]);
+    // 他のユーザーに新規ユーザーを通知
+    socket.broadcast.emit('newUser', users[socket.id]);
 
-    // プレイヤー位置更新
-    socket.on('playerMovement', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].x = data.x;
-            players[socket.id].y = data.y;
-            players[socket.id].z = data.z;
-            players[socket.id].rotationY = data.rotationY;
-            players[socket.id].motion = data.motion;
-            players[socket.id].mode = data.mode;
+    // ユーザー位置更新
+    socket.on('userMovement', (data) => {
+        if (users[socket.id]) {
+            users[socket.id].x = data.x;
+            users[socket.id].y = data.y;
+            users[socket.id].z = data.z;
+            users[socket.id].rotationY = data.rotationY;
+            users[socket.id].motion = data.motion;
+            users[socket.id].mode = data.mode;
 
-            // 他のプレイヤーに送信
-            socket.broadcast.emit('playerMoved', players[socket.id]);
+            // 他のユーザーに送信
+            socket.broadcast.emit('userMoved', users[socket.id]);
         }
     });
 
-    // 攻撃データ
-    socket.on('playerAttack', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].isAttacking = true;
+    // アクションデータ
+    socket.on('userAction', (data) => {
+        if (users[socket.id]) {
+            users[socket.id].isActive = true;
             
-            // 攻撃を他のプレイヤーに送信
-            socket.broadcast.emit('playerAttacked', {
+            // アクションを他のユーザーに送信
+            socket.broadcast.emit('userActioned', {
                 id: socket.id,
                 x: data.x,
                 y: data.y,
@@ -73,19 +73,19 @@ io.on('connection', (socket) => {
                 motion: data.motion
             });
 
-            // 攻撃終了
+            // アクション終了
             setTimeout(() => {
-                if (players[socket.id]) {
-                    players[socket.id].isAttacking = false;
+                if (users[socket.id]) {
+                    users[socket.id].isActive = false;
                 }
             }, 800);
         }
     });
 
-    // 魔法発射
-    socket.on('magicProjectile', (data) => {
-        // 全プレイヤーに魔法弾を送信
-        socket.broadcast.emit('newMagicProjectile', {
+    // 特殊効果発射
+    socket.on('specialProjectile', (data) => {
+        // 全ユーザーに特殊効果弾を送信
+        socket.broadcast.emit('newSpecialProjectile', {
             ownerId: socket.id,
             x: data.x,
             y: data.y,
@@ -94,29 +94,29 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ダメージ処理
-    socket.on('hitPlayer', (data) => {
-        if (players[data.targetId]) {
-            players[data.targetId].health -= data.damage;
+    // 影響処理
+    socket.on('hitUser', (data) => {
+        if (users[data.targetId]) {
+            users[data.targetId].status -= data.value;
             
-            // ダメージを受けたプレイヤーに通知
-            io.to(data.targetId).emit('tookDamage', {
-                damage: data.damage,
+            // 影響を受けたユーザーに通知
+            io.to(data.targetId).emit('tookEffect', {
+                value: data.value,
                 fromId: socket.id,
-                newHealth: players[data.targetId].health
+                newStatus: users[data.targetId].status
             });
 
-            // 攻撃者に通知
-            socket.emit('damageDealt', {
+            // 送信者に通知
+            socket.emit('effectDealt', {
                 targetId: data.targetId,
-                damage: data.damage
+                value: data.value
             });
 
-            // 体力0になったら
-            if (players[data.targetId].health <= 0) {
-                players[data.targetId].health = 100; // リスポーン
-                io.to(data.targetId).emit('playerDied', {
-                    killerId: socket.id
+            // 状態値0になったら
+            if (users[data.targetId].status <= 0) {
+                users[data.targetId].status = 100; // リセット
+                io.to(data.targetId).emit('userReset', {
+                    sourceId: socket.id
                 });
             }
         }
@@ -124,9 +124,9 @@ io.on('connection', (socket) => {
 
     // 切断時
     socket.on('disconnect', () => {
-        console.log(`プレイヤー切断: ${socket.id}`);
-        delete players[socket.id];
-        io.emit('playerDisconnected', socket.id);
+        console.log(`ユーザー切断: ${socket.id}`);
+        delete users[socket.id];
+        io.emit('userDisconnected', socket.id);
     });
 });
 
