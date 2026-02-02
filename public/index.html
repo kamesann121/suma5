@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>新しいタブ</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #dcdcdc; font-family: sans-serif; }
+        #gui-overlay { 
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; background: rgba(0,0,0,0.7); padding: 25px; border-radius: 12px;
+            text-align: center; pointer-events: none; z-index: 200; font-weight: bold;
+        }
+        #ui-bar { position: fixed; bottom: 20px; right: 20px; display: flex; gap: 10px; z-index: 300; }
+        .item-slot {
+            width: 60px; height: 60px; background: rgba(0, 0, 0, 0.6); border: 2px solid #555; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: bold;
+        }
+        .item-slot.selected { border-color: #ffaa00; background: rgba(255, 170, 0, 0.4); }
+        #aim-mark {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 8px; height: 8px; border: 2px solid rgba(0, 255, 0, 0.8);
+            border-radius: 50%; pointer-events: none; z-index: 100;
+        }
+        #magic-charge {
+            position: fixed; bottom: 90px; right: 20px;
+            width: 200px; display: none; z-index: 150;
+        }
+        .magic-label {
+            color: white; font-size: 12px; margin-bottom: 5px;
+            text-shadow: 0 0 5px rgba(168, 85, 247, 0.8);
+            font-weight: bold;
+        }
+        .magic-bar-container {
+            width: 100%; height: 25px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 2px solid #a855f7;
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.5);
+        }
+        .magic-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #a855f7, #6366f1);
+            width: 0%;
+            transition: width 0.1s linear;
+            position: relative;
+        }
+        .magic-bar-fill.ready {
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+            animation: glow-bar 1s infinite;
+        }
+        .magic-bar-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+            width: 200px;
+            text-align: center;
+        }
+        @keyframes glow-bar {
+            0%, 100% { box-shadow: 0 0 10px #4ade80 inset; }
+            50% { box-shadow: 0 0 20px #4ade80 inset; }
+        }
+        #health-bar {
+            position: fixed; top: 20px; left: 20px;
+            width: 200px; z-index: 150;
+        }
+        .health-label {
+            color: white; font-size: 12px; margin-bottom: 5px;
+            text-shadow: 0 0 5px rgba(74, 222, 128, 0.8);
+            font-weight: bold;
+        }
+        .health-bar-container {
+            width: 100%; height: 25px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 2px solid #4ade80;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .health-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+            width: 100%;
+            transition: width 0.3s;
+        }
+        #player-count {
+            position: fixed; top: 20px; right: 20px;
+            color: white; background: rgba(0,0,0,0.7);
+            padding: 10px 15px; border-radius: 8px;
+            font-weight: bold; z-index: 150;
+        }
+    </style>
+</head>
+<body>
+    <div id="gui-overlay">3Dアプリケーション<br>クリックして開始<br>(Keys 1, 2, 3 / V: Squat)</div>
+    <div id="aim-mark"></div>
+    <div id="health-bar">
+        <div class="health-label">状態</div>
+        <div class="health-bar-container">
+            <div class="health-bar-fill" id="health-fill"></div>
+        </div>
+    </div>
+    <div id="player-count">ユーザー: 1</div>
+    <div id="magic-charge">
+        <div class="magic-label">エネルギー</div>
+        <div class="magic-bar-container">
+            <div class="magic-bar-fill" id="magic-bar">
+                <div class="magic-bar-text" id="magic-text">0%</div>
+            </div>
+        </div>
+    </div>
+    <div id="ui-bar">
+        <div class="item-slot selected" id="s-1">Mode 1</div>
+        <div class="item-slot" id="s-2">Mode 2</div>
+        <div class="item-slot" id="s-3">Special</div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, clock, mainMixer, coreModel;
+        let effectMixer;
+        let keys = { q: false, e: false, c: false, s: false };
+        let vertVel = 0, inAir = false, jumpReady = true, isLowPos = false, procActive = false;
+        let activeIdx = 1, motionLib = {}, activeMotion;
+        let r_mount, l_mount, subAsset;
+        let baseVfx, handVfx, projectiles = [], camRotX = 0, camRotY = 0.2;
+        let isStandby = false;
+        let magicChargeTime = 0;
+        let magicReady = false;
+        let userStatus = 100;
+        const MAGIC_CHARGE_DURATION = 5;
+        const gltfLoader = new THREE.GLTFLoader();
+
+        // マルチプレイヤー用
+        let socket;
+        let otherUsers = {};
+        let otherProjectiles = [];
+        const ACTION_RANGE = 2; // アクション範囲
+        const ACTION_DAMAGE = 20; // アクション影響値
+
+        function switchMotion(id, gap = 0.2) {
+            const target = motionLib[id];
+            if (target && activeMotion !== target) {
+                if (activeMotion) activeMotion.fadeOut(gap);
+                target.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(gap).play();
+                activeMotion = target;
+            }
+        }
+
+        async function updateMode(idx) {
+            if (activeIdx === idx || procActive) return;
+            if (activeIdx === 3) {
+                isStandby = false;
+                if (baseVfx) {
+                    let fadeTime = 0;
+                    const fadeInterval = setInterval(() => {
+                        fadeTime += 0.016;
+                        if (baseVfx) {
+                            baseVfx.traverse(node => {
+                                if (node.isMesh && node.material) {
+                                    if (!node.material.transparent) {
+                                        node.material.transparent = true;
+                                        node.material.opacity = 1;
+                                    }
+                                    node.material.opacity = Math.max(0, 1 - fadeTime * 2);
+                                }
+                            });
+                            baseVfx.position.y -= 0.02;
+                        }
+                        if (fadeTime >= 0.5) {
+                            clearInterval(fadeInterval);
+                            if (baseVfx) baseVfx.visible = false;
+                        }
+                    }, 16);
+                }
+                document.getElementById('magic-charge').style.display = 'none';
+                switchMotion('m_end', 0.2);
+                await new Promise(r => setTimeout(r, 400));
+            }
+            activeIdx = idx;
+            document.querySelectorAll('.item-slot').forEach((s, i) => s.classList.toggle('selected', i === idx - 1));
+            if (subAsset) {
+                if (idx !== 2) subAsset.visible = false;
+            }
+            if (idx === 3) {
+                isStandby = true;
+                magicChargeTime = 0;
+                magicReady = false;
+                switchMotion('m_start', 0.2);
+                if (baseVfx) {
+                    baseVfx.visible = true;
+                    baseVfx.position.y = -1.5;
+                    baseVfx.traverse(node => {
+                        if (node.isMesh && node.material) {
+                            node.material.transparent = true;
+                            node.material.opacity = 0;
+                        }
+                    });
+                    let fadeTime = 0;
+                    const fadeInterval = setInterval(() => {
+                        fadeTime += 0.016;
+                        if (baseVfx) {
+                            baseVfx.traverse(node => {
+                                if (node.isMesh && node.material) {
+                                    node.material.opacity = Math.min(1, fadeTime * 2);
+                                }
+                            });
+                            if (baseVfx.position.y < -1.0) {
+                                baseVfx.position.y += 0.02;
+                            }
+                        }
+                        if (fadeTime >= 0.5) clearInterval(fadeInterval);
+                    }, 16);
+                    if (effectMixer) effectMixer.clipAction(baseVfx.animations[0]).reset().play();
+                }
+                document.getElementById('magic-charge').style.display = 'block';
+                setTimeout(() => { if (activeIdx === 3) isStandby = false; }, 5000);
+            } else {
+                refreshMove();
+            }
+        }
+
+        function emitObj() {
+            if (!l_mount || !magicReady) return;
+            const pos = new THREE.Vector3();
+            l_mount.getWorldPosition(pos);
+            gltfLoader.load('./magicball.glb', (data) => {
+                const obj = data.scene;
+                obj.position.copy(pos);
+                
+                obj.traverse((node) => {
+                    if (node.isMesh) {
+                        if (node.material) {
+                            node.material = node.material.clone();
+                            node.material.needsUpdate = true;
+                        }
+                    }
+                });
+                
+                const vec = new THREE.Vector3(0, 0, 1).applyQuaternion(coreModel.quaternion);
+                scene.add(obj);
+                projectiles.push({ mesh: obj, v: vec, ttl: 100, owner: 'self' });
+
+                // サーバーに特殊効果発射を通知
+                if (socket) {
+                    socket.emit('specialProjectile', {
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z,
+                        direction: { x: vec.x, y: vec.y, z: vec.z }
+                    });
+                }
+            });
+            magicChargeTime = 0;
+            magicReady = false;
+        }
+
+        function triggerAction() {
+            if (procActive || inAir || isStandby) return;
+            
+            if (activeIdx === 3 && !magicReady) return;
+            
+            procActive = true;
+            
+            if (activeIdx === 2 && subAsset) {
+                subAsset.visible = true;
+            }
+            
+            let mId = (activeIdx === 2) ? 'm_action2' : (activeIdx === 3 ? 'm_action3' : 'm_action1');
+            
+            if (activeIdx === 3) {
+                emitObj();
+                if (motionLib['m_action3']) {
+                    if (activeMotion === motionLib['m_action3']) {
+                        activeMotion = null;
+                    }
+                    motionLib['m_action3'].stop();
+                    motionLib['m_action3'].reset();
+                    motionLib['m_action3'].time = 0;
+                }
+            } else {
+                // 近接アクションの当たり判定チェック
+                checkMeleeContact();
+            }
+            
+            switchMotion(mId, 0.1);
+
+            // サーバーにアクションを通知
+            if (socket && coreModel) {
+                socket.emit('userAction', {
+                    x: coreModel.position.x,
+                    y: coreModel.position.y,
+                    z: coreModel.position.z,
+                    direction: { x: Math.sin(coreModel.rotation.y), z: Math.cos(coreModel.rotation.y) },
+                    mode: activeIdx,
+                    motion: mId
+                });
+            }
+            
+            setTimeout(() => { 
+                procActive = false; 
+                if (activeIdx === 3) {
+                    switchMotion('m_pose', 0.2);
+                } else {
+                    refreshMove();
+                }
+            }, 800);
+        }
+
+        function checkMeleeContact() {
+            if (!coreModel) return;
+            
+            Object.keys(otherUsers).forEach(id => {
+                const other = otherUsers[id];
+                if (other && other.mesh) {
+                    const distance = coreModel.position.distanceTo(other.mesh.position);
+                    if (distance < ACTION_RANGE) {
+                        // アクション方向チェック
+                        const dirToTarget = new THREE.Vector3()
+                            .subVectors(other.mesh.position, coreModel.position)
+                            .normalize();
+                        const attackDir = new THREE.Vector3(
+                            Math.sin(coreModel.rotation.y),
+                            0,
+                            Math.cos(coreModel.rotation.y)
+                        );
+                        const dotProduct = dirToTarget.dot(attackDir);
+                        
+                        if (dotProduct > 0.5) { // 前方にいる場合
+                            if (socket) {
+                                socket.emit('hitUser', {
+                                    targetId: id,
+                                    damage: ACTION_DAMAGE
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function refreshMove() {
+            if (procActive || inAir || (activeIdx === 3)) return;
+            let dx = (keys.q ? -1 : 0) + (keys.c ? 1 : 0);
+            let dz = (keys.e ? -1 : 0) + (keys.s ? 1 : 0);
+            
+            if (subAsset) {
+                const isMoving = (dx !== 0 || dz !== 0);
+                subAsset.visible = (activeIdx === 2 && !isMoving);
+            }
+            
+            if (dx !== 0 || dz !== 0) {
+                if (isLowPos) switchMotion('m_low_walk', 0.2);
+                else if (keys.e && !keys.s && !keys.q && !keys.c) switchMotion('m_fast', 0.2);
+                else switchMotion('m_walk', 0.2);
+            } else {
+                if (activeIdx === 2) switchMotion('m_idle2', 0.2);
+                else switchMotion(isLowPos ? 'm_low_idle' : 'm_idle1', 0.2);
+            }
+        }
+
+        function updateHealth(health) {
+            userStatus = Math.max(0, Math.min(100, health));
+            const fillElem = document.getElementById('health-fill');
+            if (fillElem) {
+                fillElem.style.width = userStatus + '%';
+            }
+        }
+
+        window.onload = function() {
+            // Socket.io接続
+            socket = io();
+
+            socket.on('currentUsers', (players) => {
+                Object.keys(players).forEach(id => {
+                    if (id !== socket.id) {
+                        addOtherUser(id, players[id]);
+                    }
+                });
+                updateUserCount();
+            });
+
+            socket.on('newUser', (playerData) => {
+                addOtherUser(playerData.id, playerData);
+                updateUserCount();
+            });
+
+            socket.on('userMoved', (playerData) => {
+                if (otherUsers[playerData.id]) {
+                    otherUsers[playerData.id].mesh.position.set(
+                        playerData.x,
+                        playerData.y,
+                        playerData.z
+                    );
+                    otherUsers[playerData.id].mesh.rotation.y = playerData.rotationY;
+                    // モーション同期（簡易版）
+                    if (otherUsers[playerData.id].mixer && otherUsers[playerData.id].motions[playerData.motion]) {
+                        const action = otherUsers[playerData.id].motions[playerData.motion];
+                        if (!action.isRunning()) {
+                            action.play();
+                        }
+                    }
+                }
+            });
+
+            socket.on('userActioned', (data) => {
+                // 他プレイヤーのアクション表示（簡易版）
+                console.log(`Player ${data.id} attacked with mode ${data.mode}`);
+            });
+
+            socket.on('newSpecialProjectile', (data) => {
+                gltfLoader.load('./magicball.glb', (gltfData) => {
+                    const obj = gltfData.scene;
+                    obj.position.set(data.x, data.y, data.z);
+                    
+                    obj.traverse((node) => {
+                        if (node.isMesh && node.material) {
+                            node.material = node.material.clone();
+                            node.material.needsUpdate = true;
+                        }
+                    });
+                    
+                    const vec = new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z);
+                    scene.add(obj);
+                    otherProjectiles.push({ mesh: obj, v: vec, ttl: 100, owner: data.ownerId });
+                });
+            });
+
+            socket.on('tookEffect', (data) => {
+                updateHealth(data.newHealth);
+                console.log(`Took ${data.damage} damage! Health: ${data.newHealth}`);
+            });
+
+            socket.on('userReset', (data) => {
+                console.log(`You were killed by ${data.killerId}`);
+                updateHealth(100); // リスポーン
+            });
+
+            socket.on('userDisconnected', (id) => {
+                if (otherUsers[id]) {
+                    scene.remove(otherUsers[id].mesh);
+                    delete otherUsers[id];
+                }
+                updateUserCount();
+            });
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xdddddd);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.5));
+            scene.add(new THREE.GridHelper(500, 100, 0x999999, 0xcccccc));
+
+            document.body.addEventListener('mousedown', (e) => {
+                if(document.pointerLockElement !== document.body) {
+                    document.body.requestPointerLock();
+                    document.getElementById('gui-overlay').style.display = 'none';
+                } else if (e.button === 0) triggerAction();
+            });
+
+            gltfLoader.load('./magic.glb', (d) => { 
+                baseVfx = d.scene; baseVfx.visible = false; baseVfx.animations = d.animations;
+                effectMixer = new THREE.AnimationMixer(baseVfx); scene.add(baseVfx); 
+            });
+
+            gltfLoader.load('./m.glb', (d) => {
+                coreModel = d.scene; scene.add(coreModel);
+                mainMixer = new THREE.AnimationMixer(coreModel);
+                coreModel.traverse(n => {
+                    if(n.isBone) {
+                        const nm = n.name.toLowerCase();
+                        if(nm.includes("hand") && nm.includes("l")) l_mount = n;
+                        if(nm.includes("hand") && nm.includes("r")) r_mount = n;
+                    }
+                });
+
+                gltfLoader.load('./sword.glb', (sd) => {
+                    subAsset = sd.scene; 
+                    subAsset.visible = false;
+                    subAsset.scale.set(0.067, 0.067, 0.067);
+                    if(r_mount) { 
+                        r_mount.add(subAsset); 
+                        subAsset.position.set(0.1, -0.1, 0.8); 
+                        subAsset.rotation.set(0, 0, Math.PI); 
+                    }
+                });
+
+                ['./a.glb', './b.glb'].forEach(u => {
+                    gltfLoader.load(u, (ad) => {
+                        ad.animations.forEach((clip, i) => {
+                            clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.position'));
+                            const act = mainMixer.clipAction(clip);
+                            if (clip.name === 'Idle_Loop') motionLib['m_idle1'] = act;
+                            if (clip.name === 'Walk_Loop') motionLib['m_walk'] = act;
+                            if (clip.name === 'Sprint_Loop') motionLib['m_fast'] = act;
+                            if (clip.name === 'Jump_Start') { motionLib['m_j_s'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                            if (clip.name === 'Jump_Loop') motionLib['m_j_l'] = act;
+                            if (clip.name === 'Jump_Land') { motionLib['m_j_e'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                            if (u === './b.glb') {
+                                if (i === 1) motionLib['m_low_walk'] = act;
+                                if (i === 2) motionLib['m_low_idle'] = act;
+                                if (i === 25) { motionLib['m_action1'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                                if (i === 42) motionLib['m_idle2'] = act;
+                                if (i === 40) { motionLib['m_action2'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                                if (i === 33) { motionLib['m_start'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                                if (i === 35) motionLib['m_pose'] = act;
+                                if (i === 36) { motionLib['m_action3'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                                if (i === 34) { motionLib['m_end'] = act; act.setLoop(THREE.LoopOnce); act.clampWhenFinished = true; }
+                            }
+                        });
+                        if (motionLib['m_idle1']) switchMotion('m_idle1');
+                    });
+                });
+            });
+
+            window.onkeydown = (e) => {
+                const k = e.key.toLowerCase();
+                if (['e','s','q','c'].includes(k)) keys[k] = true;
+                if (k === 'v') isLowPos = !isLowPos;
+                if (k === ' ' && !inAir && jumpReady && activeIdx !== 3) { 
+                    inAir = true; jumpReady = false; vertVel = 0.18; switchMotion('m_j_s', 0.1); 
+                }
+                if (['1','2','3'].includes(k)) updateMode(parseInt(k));
+            };
+            window.onkeyup = (e) => { if (['e','s','q','c'].includes(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false; };
+            window.addEventListener('mousemove', (e) => { 
+                if (document.pointerLockElement === document.body) { 
+                    camRotX -= e.movementX * 0.002; 
+                    camRotY = Math.max(-0.7, Math.min(1.1, camRotY + e.movementY * 0.002)); 
+                } 
+            });
+
+            clock = new THREE.Clock();
+            function run() {
+                requestAnimationFrame(run);
+                const dt = clock.getDelta();
+                if (mainMixer) mainMixer.update(dt);
+                if (effectMixer) effectMixer.update(dt);
+
+                // 他プレイヤーのアニメーション更新
+                Object.keys(otherUsers).forEach(id => {
+                    if (otherUsers[id].mixer) {
+                        otherUsers[id].mixer.update(dt);
+                    }
+                });
+
+                if (activeIdx === 3 && !isStandby) {
+                    magicChargeTime += dt;
+                    const chargePercent = Math.min(100, (magicChargeTime / MAGIC_CHARGE_DURATION) * 100);
+                    const barFill = document.getElementById('magic-bar');
+                    const barText = document.getElementById('magic-text');
+                    
+                    barFill.style.width = chargePercent + '%';
+                    barText.textContent = Math.floor(chargePercent) + '%';
+                    
+                    if (chargePercent >= 100 && !magicReady) {
+                        magicReady = true;
+                        barFill.classList.add('ready');
+                        barText.textContent = 'Ready!';
+                    } else if (chargePercent < 100) {
+                        magicReady = false;
+                        barFill.classList.remove('ready');
+                    }
+                }
+
+                if (coreModel) {
+                    const activeMove = !procActive && activeIdx !== 3;
+                    let dx = (keys.q ? -1 : 0) + (keys.c ? 1 : 0);
+                    let dz = (keys.e ? -1 : 0) + (keys.s ? 1 : 0);
+                    if (activeMove && (dx !== 0 || dz !== 0)) {
+                        const targetRot = Math.atan2(dx, dz) + camRotX;
+                        let diff = targetRot - coreModel.rotation.y;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        coreModel.rotation.y += diff * 0.15;
+                        const s = (keys.e && !keys.s && !keys.q && !keys.c && !isLowPos) ? 0.14 : 0.07;
+                        coreModel.position.x += Math.sin(coreModel.rotation.y) * s;
+                        coreModel.position.z += Math.cos(coreModel.rotation.y) * s;
+                    }
+                    refreshMove();
+
+                    // サーバーに位置を送信
+                    if (socket && coreModel) {
+                        socket.emit('userMovement', {
+                            x: coreModel.position.x,
+                            y: coreModel.position.y,
+                            z: coreModel.position.z,
+                            rotationY: coreModel.rotation.y,
+                            motion: activeMotion ? activeMotion._clip.name : 'm_idle1',
+                            mode: activeIdx
+                        });
+                    }
+
+                    if (baseVfx && baseVfx.visible) {
+                        baseVfx.position.set(coreModel.position.x, baseVfx.position.y, coreModel.position.z);
+                        if (baseVfx.position.y < 0) baseVfx.position.y += 0.01;
+                        baseVfx.rotation.y += 0.02;
+                    }
+
+                    // 自分の特殊効果弾更新
+                    for (let i = projectiles.length - 1; i >= 0; i--) {
+                        projectiles[i].mesh.position.add(projectiles[i].v.clone().multiplyScalar(0.4));
+                        
+                        // 他プレイヤーとの当たり判定
+                        Object.keys(otherUsers).forEach(id => {
+                            const other = otherUsers[id];
+                            if (other && other.mesh) {
+                                const distance = projectiles[i].mesh.position.distanceTo(other.mesh.position);
+                                if (distance < 1) {
+                                    if (socket) {
+                                        socket.emit('hitUser', {
+                                            targetId: id,
+                                            damage: 30
+                                        });
+                                    }
+                                    scene.remove(projectiles[i].mesh);
+                                    projectiles.splice(i, 1);
+                                    return;
+                                }
+                            }
+                        });
+                        
+                        if (projectiles[i] && projectiles[i].ttl-- <= 0) { 
+                            scene.remove(projectiles[i].mesh); 
+                            projectiles.splice(i, 1); 
+                        }
+                    }
+
+                    // 他プレイヤーの特殊効果弾更新
+                    for (let i = otherProjectiles.length - 1; i >= 0; i--) {
+                        otherProjectiles[i].mesh.position.add(otherProjectiles[i].v.clone().multiplyScalar(0.4));
+                        
+                        // 自分との当たり判定
+                        if (coreModel) {
+                            const distance = otherProjectiles[i].mesh.position.distanceTo(coreModel.position);
+                            if (distance < 1) {
+                                // 影響値はサーバー側で処理
+                                scene.remove(otherProjectiles[i].mesh);
+                                otherProjectiles.splice(i, 1);
+                                continue;
+                            }
+                        }
+                        
+                        if (otherProjectiles[i] && otherProjectiles[i].ttl-- <= 0) { 
+                            scene.remove(otherProjectiles[i].mesh); 
+                            otherProjectiles.splice(i, 1); 
+                        }
+                    }
+
+                    if (inAir) {
+                        coreModel.position.y += vertVel; vertVel -= 0.008;
+                        if (vertVel < 0 && activeMotion === motionLib['m_j_s']) switchMotion('m_j_l', 0.3);
+                        if (coreModel.position.y <= 0) { 
+                            coreModel.position.y = 0; inAir = false; switchMotion('m_j_e', 0.1);
+                            setTimeout(() => { jumpReady = true; refreshMove(); }, 300);
+                        }
+                    } else {
+                        const ty = (isLowPos && activeIdx !== 3) ? -0.4 : 0;
+                        coreModel.position.y += (ty - coreModel.position.y) * 0.1;
+                    }
+
+                    const d = 2.4, sh = 1.0, h = 1.5;
+                    const hd = d * Math.cos(camRotY), vd = d * Math.sin(camRotY);
+                    let cx = coreModel.position.x + hd * Math.sin(camRotX);
+                    let cz = coreModel.position.z + hd * Math.cos(camRotX);
+                    let cy = coreModel.position.y + h + vd;
+                    cx += Math.cos(camRotX) * sh; cz -= Math.sin(camRotX) * sh;
+                    camera.position.set(cx, cy, cz);
+                    camera.lookAt(new THREE.Vector3(cx - Math.sin(camRotX) * 20, cy - Math.sin(camRotY) * 20, cz - Math.cos(camRotX) * 20));
+                }
+                renderer.render(scene, camera);
+            }
+            run();
+        };
+
+        function addOtherUser(id, data) {
+            gltfLoader.load('./m.glb', (gltf) => {
+                const playerMesh = gltf.scene;
+                playerMesh.position.set(data.x, data.y, data.z);
+                playerMesh.rotation.y = data.rotationY;
+                
+                // 他プレイヤーを少し暗くして区別
+                playerMesh.traverse(node => {
+                    if (node.isMesh && node.material) {
+                        node.material = node.material.clone();
+                        node.material.emissive = new THREE.Color(0x0066ff);
+                        node.material.emissiveIntensity = 0.2;
+                    }
+                });
+                
+                scene.add(playerMesh);
+                
+                const mixer = new THREE.AnimationMixer(playerMesh);
+                const motions = {};
+                
+                // アニメーション読み込み（簡易版）
+                ['./a.glb', './b.glb'].forEach(url => {
+                    gltfLoader.load(url, (animData) => {
+                        animData.animations.forEach(clip => {
+                            clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.position'));
+                            motions[clip.name] = mixer.clipAction(clip);
+                        });
+                    });
+                });
+                
+                otherUsers[id] = {
+                    mesh: playerMesh,
+                    mixer: mixer,
+                    motions: motions
+                };
+            });
+        }
+
+        function updateUserCount() {
+            const count = Object.keys(otherUsers).length + 1;
+            document.getElementById('player-count').textContent = `プレイヤー: ${count}`;
+        }
+    </script>
+</body>
+</html>
